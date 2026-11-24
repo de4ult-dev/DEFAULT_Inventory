@@ -46,6 +46,13 @@ const supplierSchema = new mongoose.Schema(
     { timestamps: true }
 );
 
+supplierSchema.pre('validate', function () {
+    if (!this.defaultCurrency) {
+        this.defaultCurrency = this.type === 'EXTERNAL' ? 'USD' : 'Kz';
+    }
+});
+
 supplierSchema.index({ name: 1 });
+supplierSchema.index({ type: 1, isActive: 1 });
 
 module.exports = mongoose.model('Supplier', supplierSchema);

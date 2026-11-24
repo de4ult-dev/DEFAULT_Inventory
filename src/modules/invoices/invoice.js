@@ -1,52 +1,5 @@
 const mongoose = require('mongoose');
 
-const invoiceItemSchema = new mongoose.Schema(
-  {
-    productId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: [true, 'Product reference is required'],
-    },
-    skuSnapshot: {
-      type: String,
-      trim: true,
-      default: '',
-    },
-    nameSnapshot: {
-      type: String,
-      trim: true,
-      default: '',
-    },
-    quantity: {
-      type: Number,
-      required: [true, 'Quantity is required'],
-      min: [0.000001, 'Quantity must be greater than zero'],
-    },
-    unitPrice: {
-      type: Number,
-      required: [true, 'Unit price is required'],
-      min: [0, 'Unit price cannot be negative'],
-    },
-    currency: {
-      type: String,
-      enum: ['USD', 'Kz'],
-      required: [true, 'Item currency is required'],
-    },
-    lineTotal: {
-      type: Number,
-      required: true,
-      default: 0,
-      min: 0,
-    },
-    unitCostSnapshot: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-  },
-  { _id: false }
-);
-
 const invoiceSchema = new mongoose.Schema(
   {
     number: {
@@ -75,13 +28,6 @@ const invoiceSchema = new mongoose.Schema(
       type: Date,
       required: true,
       default: Date.now,
-    },
-    items: {
-      type: [invoiceItemSchema],
-      validate: [
-        (val) => Array.isArray(val) && val.length > 0,
-        'Invoice must contain at least one item',
-      ],
     },
     // Independent totals per currency (no auto-conversion between USD and Kz)
     totals: {
