@@ -74,5 +74,6 @@ const stockMoveSchema = new mongoose.Schema(
 
 stockMoveSchema.index({ productId: 1, date: -1 });
 stockMoveSchema.index({ referenceType: 1, referenceId: 1 });
+stockMoveSchema.index({ referenceNumber: 1, date: -1 });
 
 module.exports = mongoose.model('StockMove', stockMoveSchema);

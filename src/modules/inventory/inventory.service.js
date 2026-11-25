@@ -40,6 +40,7 @@ async function receiveStock(
         referenceId = null,
         referenceNumber = '',
         reason = '',
+        allowInactiveProduct = false,
         performedBy = null,
         date = new Date(),
     },
@@ -70,6 +71,12 @@ async function receiveStock(
         if (!product) {
             const err = new Error('Product not found.');
             err.statusCode = 404;
+            throw err;
+        }
+
+        if (product.isActive === false && !allowInactiveProduct) {
+            const err = new Error(`Product "${product.sku}" is inactive.`);
+            err.statusCode = 400;
             throw err;
         }
 
@@ -169,6 +176,7 @@ async function deductStock(
         referenceId = null,
         referenceNumber = '',
         reason = '',
+        allowInactiveProduct = false,
         performedBy = null,
         date = new Date(),
     },
@@ -192,6 +200,12 @@ async function deductStock(
         if (!product) {
             const err = new Error('Product not found.');
             err.statusCode = 404;
+            throw err;
+        }
+
+        if (product.isActive === false && !allowInactiveProduct) {
+            const err = new Error(`Product "${product.sku}" is inactive.`);
+            err.statusCode = 400;
             throw err;
         }
 
@@ -359,9 +373,93 @@ async function reclassifyDamagedStock({
     });
 }
 
+/**
+ * Fetches stock movement history (`StockMove`) for a product with optional filters.
+ */
+async function getProductStockLedger(
+    productId,
+    { from = null, to = null, stockBucket = null, limit = 200 } = {}
+) {
+    const product = await Product.findById(productId).lean();
+    if (!product) {
+        const err = new Error('Product not found.');
+        err.statusCode = 404;
+        throw err;
+    }
+
+    const query = { productId: product._id };
+    if (stockBucket && ['AVAILABLE', 'DAMAGED'].includes(stockBucket)) {
+        query.stockBucket = stockBucket;
+    }
+    if (from || to) {
+        query.date = {};
+        if (from) query.date.$gte = new Date(from);
+        if (to) query.date.$lte = new Date(to);
+    }
+
+    const moves = await StockMove.find(query)
+        .sort({ date: -1, createdAt: -1 })
+        .limit(Number(limit) || 200)
+        .lean();
+
+    return {
+        product,
+        stock: product.stock,
+        cost: product.cost,
+        currency: product.currency,
+        moves,
+    };
+}
+
+/**
+ * Computes total inventory valuation split by currency ('USD' and 'Kz')
+ * across AVAILABLE and DAMAGED stock buckets.
+ */
+async function getInventoryValuation({ includeInactive = false } = {}) {
+    const filter = includeInactive ? {} : { isActive: { $ne: false } };
+    const products = await Product.find(filter).lean();
+
+    let availableUsd = toDecimal(0);
+    let availableKz = toDecimal(0);
+    let damagedUsd = toDecimal(0);
+    let damagedKz = toDecimal(0);
+
+    for (const p of products) {
+        const costDec = toDecimal(p.cost || 0);
+        const availVal = toDecimal(p.stock?.available || 0).times(costDec);
+        const dmgVal = toDecimal(p.stock?.damaged || 0).times(costDec);
+
+        if (p.currency === 'USD') {
+            availableUsd = availableUsd.plus(availVal);
+            damagedUsd = damagedUsd.plus(dmgVal);
+        } else {
+            availableKz = availableKz.plus(availVal);
+            damagedKz = damagedKz.plus(dmgVal);
+        }
+    }
+
+    return {
+        available: {
+            usd: availableUsd.toDecimalPlaces(2).toNumber(),
+            kz: availableKz.toDecimalPlaces(2).toNumber(),
+        },
+        damaged: {
+            usd: damagedUsd.toDecimalPlaces(2).toNumber(),
+            kz: damagedKz.toDecimalPlaces(2).toNumber(),
+        },
+        total: {
+            usd: availableUsd.plus(damagedUsd).toDecimalPlaces(2).toNumber(),
+            kz: availableKz.plus(damagedKz).toDecimalPlaces(2).toNumber(),
+        },
+        productsCount: products.length,
+    };
+}
+
 module.exports = {
     computeMovingAverageCost,
     receiveStock,
     deductStock,
     reclassifyDamagedStock,
+    getProductStockLedger,
+    getInventoryValuation,
 };

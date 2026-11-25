@@ -2,9 +2,21 @@ const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema(
     {
-        name: {
+        fullName: {
             type: String,
-            required: [true, 'User name is required'],
+            required: [true, 'Full name is required'],
+            trim: true,
+        },
+        email: {
+            type: String,
+            required: [true, 'Email is required'],
+            unique: true,
+            trim: true,
+            lowercase: true,
+        },
+        companyName: {
+            type: String,
+            required: [true, 'Company name is required'],
             trim: true,
         },
         username: {
@@ -33,8 +45,21 @@ const userSchema = new mongoose.Schema(
             type: Boolean,
             default: true,
         },
+        lastLoginAt: {
+            type: Date,
+            default: null,
+        },
     },
     { timestamps: true }
 );
+
+// للحفاظ على التوافق مع أي كود قديم بيقرأ user.name
+userSchema.virtual('name').get(function () {
+    return this.fullName;
+});
+
+userSchema.index({ role: 1, isActive: 1 });
+userSchema.index({ isActive: 1 });
+userSchema.index({ lastLoginAt: 1 });
 
 module.exports = mongoose.model('User', userSchema);

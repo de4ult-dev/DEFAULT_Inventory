@@ -47,6 +47,8 @@ async function recordCashMovement(
     throw err;
   }
 
+  const cleanAmount = amtDec.toDecimalPlaces(2).toNumber();
+
   const execute = async (session) => {
     const cashbox = await Cashbox.findById(cashboxId).session(session);
     if (!cashbox) {
@@ -63,14 +65,14 @@ async function recordCashMovement(
 
     assertSameCurrency(cashbox.currency, currency, 'cash movement');
 
-    const balanceBefore = cashbox.balance;
+    const balanceBefore = toDecimal(cashbox.balance).toDecimalPlaces(2).toNumber();
     let balanceAfter;
 
     if (direction === 'OUT') {
-      assertSufficientCash(balanceBefore, amount, cashbox.name, cashbox.currency);
-      balanceAfter = subMoney(balanceBefore, amount, 2);
+      assertSufficientCash(balanceBefore, cleanAmount, cashbox.name, cashbox.currency);
+      balanceAfter = subMoney(balanceBefore, cleanAmount, 2);
     } else {
-      balanceAfter = addMoney(balanceBefore, amount, 2);
+      balanceAfter = addMoney(balanceBefore, cleanAmount, 2);
     }
 
     cashbox.balance = balanceAfter;
@@ -81,7 +83,7 @@ async function recordCashMovement(
         {
           cashboxId: cashbox._id,
           direction,
-          amount: amtDec.toDecimalPlaces(2).toNumber(),
+          amount: cleanAmount,
           currency: cashbox.currency,
           balanceBefore,
           balanceAfter,
@@ -153,6 +155,8 @@ async function transferBetweenCashboxes({
     throw err;
   }
 
+  const cleanAmount = amtDec.toDecimalPlaces(2).toNumber();
+
   return runInTransaction(async (session) => {
     const fromBox = await Cashbox.findById(fromCashboxId).session(session);
     const toBox = await Cashbox.findById(toCashboxId).session(session);
@@ -174,7 +178,7 @@ async function transferBetweenCashboxes({
     }
 
     assertSameCurrency(fromBox.currency, toBox.currency, 'cashbox transfer');
-    assertSufficientCash(fromBox.balance, amount, fromBox.name, fromBox.currency);
+    assertSufficientCash(fromBox.balance, cleanAmount, fromBox.name, fromBox.currency);
 
     const transferNumber = await getNextSequence('CASH_TRANSFER', 'TRF', session);
 
@@ -182,7 +186,7 @@ async function transferBetweenCashboxes({
       {
         cashboxId: fromBox._id,
         direction: 'OUT',
-        amount,
+        amount: cleanAmount,
         currency: fromBox.currency,
         category: 'CASHBOX_TRANSFER',
         referenceType: 'TRANSFER',
@@ -200,7 +204,7 @@ async function transferBetweenCashboxes({
       {
         cashboxId: toBox._id,
         direction: 'IN',
-        amount,
+        amount: cleanAmount,
         currency: toBox.currency,
         category: 'CASHBOX_TRANSFER',
         referenceType: 'TRANSFER',
@@ -242,14 +246,125 @@ async function transferBetweenCashboxes({
     return {
       transferNumber,
       currency: fromBox.currency,
-      amount: amtDec.toDecimalPlaces(2).toNumber(),
+      amount: cleanAmount,
       from: outResult,
       to: inResult,
     };
   });
 }
 
+/**
+ * Reverses a cash movement (`CashMove`) by recording the opposite movement (`IN` <-> `OUT`)
+ * inside a transaction and logging an audit entry.
+ */
+async function reverseCashMovement({
+  cashMoveId,
+  reason = '',
+  performedBy = null,
+  date = new Date(),
+}) {
+  if (!cashMoveId) {
+    const err = new Error('cashMoveId is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return runInTransaction(async (session) => {
+    const originalMove = await CashMove.findById(cashMoveId).session(session);
+    if (!originalMove) {
+      const err = new Error('Cash movement not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const oppositeDirection = originalMove.direction === 'IN' ? 'OUT' : 'IN';
+    const reversalReason =
+      reason || `Reversal of ${originalMove.direction} movement (${originalMove._id})`;
+
+    const res = await recordCashMovement(
+      {
+        cashboxId: originalMove.cashboxId,
+        direction: oppositeDirection,
+        amount: originalMove.amount,
+        currency: originalMove.currency,
+        category: 'REVERSAL',
+        referenceType: originalMove.referenceType || 'CASH_MOVE',
+        referenceId: originalMove._id,
+        referenceNumber: originalMove.referenceNumber || String(originalMove._id),
+        description: reversalReason,
+        reason: reversalReason,
+        performedBy,
+        date,
+      },
+      session
+    );
+
+    await logAudit(
+      {
+        entityType: 'CashMove',
+        entityId: originalMove._id,
+        entityNumber: originalMove.referenceNumber || String(originalMove._id),
+        action: 'REVERSE',
+        reason: reversalReason,
+        before: {
+          originalMoveId: originalMove._id,
+          direction: originalMove.direction,
+          amount: originalMove.amount,
+          currency: originalMove.currency,
+        },
+        after: {
+          reversalMoveId: res.cashMove._id,
+          direction: oppositeDirection,
+          newCashboxBalance: res.cashbox.balance,
+        },
+        performedBy,
+        timestamp: date,
+      },
+      session
+    );
+
+    return {
+      originalMove,
+      reversalMove: res.cashMove,
+      cashbox: res.cashbox,
+    };
+  });
+}
+
+/**
+ * Fetches cashbox balance summary and chronological movements (`CashMove`) with optional date filters.
+ */
+async function getCashboxLedger(cashboxId, { from = null, to = null, limit = 200 } = {}) {
+  const cashbox = await Cashbox.findById(cashboxId).lean();
+  if (!cashbox) {
+    const err = new Error('Cashbox not found.');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const query = { cashboxId: cashbox._id };
+  if (from || to) {
+    query.date = {};
+    if (from) query.date.$gte = new Date(from);
+    if (to) query.date.$lte = new Date(to);
+  }
+
+  const moves = await CashMove.find(query)
+    .sort({ date: -1, createdAt: -1 })
+    .limit(Number(limit) || 200)
+    .lean();
+
+  return {
+    cashbox,
+    currentBalance: cashbox.balance,
+    currency: cashbox.currency,
+    moves,
+  };
+}
+
 module.exports = {
   recordCashMovement,
   transferBetweenCashboxes,
+  reverseCashMovement,
+  getCashboxLedger,
 };

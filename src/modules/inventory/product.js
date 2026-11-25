@@ -53,5 +53,6 @@ const productSchema = new mongoose.Schema(
 
 productSchema.index({ name: 1 });
 productSchema.index({ currency: 1, isActive: 1 });
+productSchema.index({ isActive: 1 });
 
 module.exports = mongoose.model('Product', productSchema);

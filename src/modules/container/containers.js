@@ -85,6 +85,15 @@ const containerSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
+    cancelReason: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     notes: {
       type: String,
       trim: true,
@@ -100,5 +109,6 @@ const containerSchema = new mongoose.Schema(
 );
 
 containerSchema.index({ supplierId: 1, status: 1 });
+containerSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Container', containerSchema);

@@ -25,8 +25,12 @@ const auditLogSchema = new mongoose.Schema(
         'POST',
         'RECEIVE',
         'CANCEL',
+        'REVERSE',
         'OVERRIDE',
         'TRANSFER',
+        'APPLY_CREDIT',
+        'CREDIT_ADD',
+        'CREDIT_DEDUCT',
       ],
       required: true,
     },
@@ -58,5 +62,6 @@ const auditLogSchema = new mongoose.Schema(
 
 auditLogSchema.index({ entityType: 1, entityId: 1, timestamp: -1 });
 auditLogSchema.index({ performedBy: 1, timestamp: -1 });
+auditLogSchema.index({ timestamp: -1 });
 
 module.exports = mongoose.model('AuditLog', auditLogSchema);

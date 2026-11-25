@@ -1,5 +1,57 @@
 const mongoose = require('mongoose');
 
+const returnItemSchema = new mongoose.Schema(
+  {
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      required: true,
+    },
+    skuSnapshot: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    nameSnapshot: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    stockBucket: {
+      type: String,
+      enum: ['AVAILABLE', 'DAMAGED'],
+      default: 'AVAILABLE',
+      required: true,
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    unitPrice: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    currency: {
+      type: String,
+      enum: ['USD', 'Kz'],
+      required: true,
+    },
+    lineTotal: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    unitCostSnapshot: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: false }
+);
+
 const returnInvoiceSchema = new mongoose.Schema(
   {
     number: {
@@ -22,6 +74,10 @@ const returnInvoiceSchema = new mongoose.Schema(
       type: Date,
       required: true,
       default: Date.now,
+    },
+    items: {
+      type: [returnItemSchema],
+      default: [],
     },
     totals: {
       usd: { type: Number, default: 0, min: 0 },

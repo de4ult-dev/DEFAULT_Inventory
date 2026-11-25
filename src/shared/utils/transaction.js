@@ -17,8 +17,10 @@ async function runInTransaction(fn, maxRetries = 3) {
         await session.abortTransaction().catch(() => { });
       }
 
+      const labels = err?.errorLabels || [];
       const isTransient =
-        err?.errorLabels?.includes('TransientTransactionError') ||
+        labels.includes('TransientTransactionError') ||
+        labels.includes('UnknownTransactionCommitResult') ||
         err?.code === 117;
 
       if (isTransient && attempt < maxRetries) {

@@ -1,10 +1,26 @@
 const Decimal = require('decimal.js');
 
-function toDecimal(value) {
+function toDecimal(value, fieldName = 'number') {
     if (value === null || value === undefined || value === '') {
         return new Decimal(0);
     }
-    return new Decimal(value);
+    if (value instanceof Decimal) {
+        return value;
+    }
+    try {
+        const d = new Decimal(value);
+        if (!d.isFinite()) {
+            const err = new Error(`Invalid finite ${fieldName}: ${value}`);
+            err.statusCode = 400;
+            throw err;
+        }
+        return d;
+    } catch (e) {
+        if (e.statusCode) throw e;
+        const err = new Error(`Invalid ${fieldName}: ${value}`);
+        err.statusCode = 400;
+        throw err;
+    }
 }
 
 function roundMoney(value, decimals = 2) {

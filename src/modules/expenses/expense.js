@@ -22,6 +22,11 @@ const expenseSchema = new mongoose.Schema(
       required: [true, 'Expense category is required'],
       default: 'OTHER',
     },
+    status: {
+      type: String,
+      enum: ['POSTED', 'CANCELLED'],
+      default: 'POSTED',
+    },
     amount: {
       type: Number,
       required: [true, 'Expense amount is required'],
@@ -62,10 +67,29 @@ const expenseSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     description: {
       type: String,
       trim: true,
       default: '',
+    },
+    cancelReason: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
+    cancelledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
     date: {
       type: Date,
@@ -83,5 +107,6 @@ const expenseSchema = new mongoose.Schema(
 
 expenseSchema.index({ category: 1, date: -1 });
 expenseSchema.index({ cashboxId: 1, date: -1 });
+expenseSchema.index({ status: 1, date: -1 });
 
 module.exports = mongoose.model('Expense', expenseSchema);

@@ -3,6 +3,9 @@ const helmet = require('helmet');
 const cors = require('cors');
 const morgan = require('morgan');
 
+// 1. استورد ملف راوتات الـ auth (عدّل المسار حسب مكان الملف عندك، مثلاً ./routes/auth.routes)
+const authRoutes = require('./modules/auth/auth.routes');
+
 const app = express();
 
 app.use(helmet());
@@ -17,6 +20,9 @@ if (process.env.NODE_ENV !== 'test') {
 app.get('/health', (req, res) => {
   res.status(200).json({ success: true, message: 'DEFAULT API is running' });
 });
+
+// 2. ركّب الراوت على /api/auth قبل الـ 404 handler
+app.use('/api/auth', authRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });

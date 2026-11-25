@@ -9,6 +9,11 @@ const exchangeSideSchema = new mongoose.Schema(
         },
         skuSnapshot: { type: String, trim: true, default: '' },
         nameSnapshot: { type: String, trim: true, default: '' },
+        stockBucket: {
+            type: String,
+            enum: ['AVAILABLE', 'DAMAGED'],
+            default: 'AVAILABLE',
+        },
         quantity: { type: Number, required: true, min: 0 },
         unitCost: { type: Number, required: true, min: 0 },
         currency: { type: String, enum: ['USD', 'Kz'], required: true },
@@ -24,6 +29,11 @@ const productExchangeSchema = new mongoose.Schema(
             required: [true, 'Exchange number is required'],
             unique: true,
             trim: true,
+        },
+        status: {
+            type: String,
+            enum: ['POSTED', 'CANCELLED'],
+            default: 'POSTED',
         },
         customerId: {
             type: mongoose.Schema.Types.ObjectId,
@@ -68,6 +78,7 @@ const productExchangeSchema = new mongoose.Schema(
 );
 
 productExchangeSchema.index({ date: -1 });
+productExchangeSchema.index({ status: 1, date: -1 });
 productExchangeSchema.index({ customerId: 1, date: -1 });
 
 module.exports = mongoose.model('ProductExchange', productExchangeSchema);

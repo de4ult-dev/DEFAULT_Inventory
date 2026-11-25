@@ -1,5 +1,5 @@
 const ReturnInvoice = require('./returnInvoice');
-const Customer = require('../customers');
+const Customer = require('../customers/customer');
 const Product = require('../inventory/product');
 const Cashbox = require('../treasury/cashbox');
 const { receiveStock } = require('../inventory/inventory.service');
@@ -16,6 +16,17 @@ function normalizeCurrency(curr) {
     if (trimmed.toUpperCase() === 'USD') return 'USD';
     if (trimmed.toUpperCase() === 'KZ') return 'Kz';
     return trimmed;
+}
+
+function hasCustomPricePermission({ allowCustomPrice = false, permissions = [], userRole = null }) {
+    if (allowCustomPrice === true) return true;
+    if (Array.isArray(permissions) && (permissions.includes('OVERRIDE_PRICE') || permissions.includes('SET_UNIT_PRICE'))) {
+        return true;
+    }
+    if (userRole && ['ADMIN', 'MANAGER'].includes(String(userRole).toUpperCase())) {
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -60,8 +71,13 @@ function convertWithManualRate(amount, fromCurrency, toCurrency, manualRate, dec
     };
 }
 
-function resolveReturnUnitPrice(product, priceList = 'CASH', explicitPrice = null) {
+function resolveReturnUnitPrice(product, priceList = 'CASH', explicitPrice = null, canOverridePrice = false) {
     if (explicitPrice !== null && explicitPrice !== undefined) {
+        if (!canOverridePrice) {
+            const err = new Error(`Custom unitPrice is not permitted for product ${product.sku}. Price must come from price list "${priceList}".`);
+            err.statusCode = 403;
+            throw err;
+        }
         const dec = toDecimal(explicitPrice);
         if (dec.lt(0)) {
             const err = new Error(`Return unit price cannot be negative for product ${product.sku}.`);
@@ -83,18 +99,23 @@ function resolveReturnUnitPrice(product, priceList = 'CASH', explicitPrice = nul
 
 async function createReturnInvoice({
     customerId = null,
-    priceList = 'CASH',
+    priceList = null,
     items = [],
     refunds = [],
     reason = '',
     performedBy = null,
     date = new Date(),
+    allowCustomPrice = false,
+    permissions = [],
+    userRole = null,
 }) {
     if (!Array.isArray(items) || items.length === 0) {
         const err = new Error('Return invoice must contain at least one item.');
         err.statusCode = 400;
         throw err;
     }
+
+    const canOverridePrice = hasCustomPricePermission({ allowCustomPrice, permissions, userRole });
 
     return runInTransaction(async (session) => {
         let customer = null;
@@ -107,6 +128,7 @@ async function createReturnInvoice({
             }
         }
 
+        const effectivePriceList = priceList || customer?.type || 'CASH';
         const returnNumber = await getNextSequence('RETURN', 'RET', session);
 
         let totalsUsd = toDecimal(0);
@@ -138,7 +160,7 @@ async function createReturnInvoice({
             }
 
             const stockBucket = rawItem.stockBucket === 'DAMAGED' ? 'DAMAGED' : 'AVAILABLE';
-            const unitPrice = resolveReturnUnitPrice(product, priceList, rawItem.unitPrice);
+            const unitPrice = resolveReturnUnitPrice(product, effectivePriceList, rawItem.unitPrice, canOverridePrice);
             const cleanQty = qtyDec.toDecimalPlaces(6).toNumber();
             const lineTotal = mulMoney(cleanQty, unitPrice, 2);
 
@@ -178,6 +200,7 @@ async function createReturnInvoice({
                 unitPrice,
                 currency: product.currency,
                 lineTotal,
+                unitCostSnapshot: returnUnitCost,
             });
         }
 
@@ -264,16 +287,19 @@ async function createReturnInvoice({
             throw err;
         }
 
-        const finalCredited = {
-            usd: subMoney(finalTotals.usd, finalRefunded.usd, 2),
-            kz: subMoney(finalTotals.kz, finalRefunded.kz, 2),
-        };
+        const finalCredited = customer
+            ? {
+                usd: subMoney(finalTotals.usd, finalRefunded.usd, 2),
+                kz: subMoney(finalTotals.kz, finalRefunded.kz, 2),
+            }
+            : { usd: 0, kz: 0 };
 
         const returnDoc = new ReturnInvoice({
             number: returnNumber,
             customerId: customer ? customer._id : null,
             customerNameSnapshot: customer ? customer.name : 'Walk-in Customer',
             date,
+            items: processedItems,
             totals: finalTotals,
             refundedAmount: finalRefunded,
             creditedAmount: finalCredited,

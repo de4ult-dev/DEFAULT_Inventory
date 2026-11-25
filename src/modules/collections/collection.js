@@ -8,6 +8,11 @@ const collectionSchema = new mongoose.Schema(
             unique: true,
             trim: true,
         },
+        status: {
+            type: String,
+            enum: ['POSTED', 'CANCELLED'],
+            default: 'POSTED',
+        },
         customerId: {
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Customer',
@@ -116,6 +121,7 @@ const collectionSchema = new mongoose.Schema(
 );
 
 collectionSchema.index({ customerId: 1, date: -1 });
+collectionSchema.index({ status: 1, date: -1 });
 collectionSchema.index({ date: -1 });
 
 module.exports = mongoose.model('Collection', collectionSchema);

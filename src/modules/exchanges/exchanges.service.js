@@ -1,5 +1,5 @@
 const ProductExchange = require('./productExchange');
-const Customer = require('../customers');
+const Customer = require('../customers/customer');
 const Product = require('../inventory/product');
 const { receiveStock, deductStock } = require('../inventory/inventory.service');
 const { convertWithManualRate } = require('../collections/collections.service');
@@ -8,9 +8,21 @@ const { mulMoney, toDecimal } = require('../../shared/utils/money');
 const { getNextSequence } = require('../../shared/services/sequence.service');
 const { logAudit } = require('../../shared/services/audit.service');
 
+const VALID_BUCKETS = ['AVAILABLE', 'DAMAGED'];
+
+function normalizeBucket(bucket, fallback = 'AVAILABLE') {
+    const val = bucket ? String(bucket).trim().toUpperCase() : fallback;
+    if (!VALID_BUCKETS.includes(val)) {
+        const err = new Error(`Invalid stock bucket: ${bucket}`);
+        err.statusCode = 400;
+        throw err;
+    }
+    return val;
+}
+
 /**
  * Value-neutral Product Exchange (`EX-...`).
- * Deducts outgoing product stock (`AVAILABLE`) and receives incoming product stock (`AVAILABLE`)
+ * Deducts outgoing product stock and receives incoming product stock
  * without creating invoices, cash movements, or changing customer/supplier balances.
  */
 async function createProductExchange({
@@ -36,6 +48,9 @@ async function createProductExchange({
         throw err;
     }
 
+    const outBucket = normalizeBucket(outgoing.stockBucket, 'AVAILABLE');
+    const inBucket = normalizeBucket(incoming.stockBucket, 'AVAILABLE');
+
     return runInTransaction(async (session) => {
         let customer = null;
         if (customerId) {
@@ -43,6 +58,11 @@ async function createProductExchange({
             if (!customer) {
                 const err = new Error('Customer not found.');
                 err.statusCode = 404;
+                throw err;
+            }
+            if (customer.isActive === false) {
+                const err = new Error(`Customer "${customer.name}" is inactive.`);
+                err.statusCode = 400;
                 throw err;
             }
         }
@@ -66,7 +86,6 @@ async function createProductExchange({
                 : toDecimal(outProduct.cost).toDecimalPlaces(4).toNumber();
         const outTotalValue = mulMoney(cleanOutQty, outUnitCost, 2);
 
-        // Determine incoming unit cost in incoming product's currency
         let inUnitCost;
         let rateUsed = exchangeRate ? toDecimal(exchangeRate).toDecimalPlaces(6).toNumber() : 1;
 
@@ -94,7 +113,7 @@ async function createProductExchange({
                 quantity: cleanOutQty,
                 unitCost: outUnitCost,
                 currency: outProduct.currency,
-                stockBucket: outgoing.stockBucket || 'AVAILABLE',
+                stockBucket: outBucket,
                 referenceType: 'ADJUSTMENT',
                 referenceNumber: number,
                 reason: reason || `Product exchange out (${number})`,
@@ -110,7 +129,7 @@ async function createProductExchange({
                 quantity: cleanInQty,
                 unitCost: inUnitCost,
                 currency: inProduct.currency,
-                stockBucket: incoming.stockBucket || 'AVAILABLE',
+                stockBucket: inBucket,
                 referenceType: 'ADJUSTMENT',
                 referenceNumber: number,
                 reason: reason || `Product exchange in (${number})`,
@@ -124,12 +143,14 @@ async function createProductExchange({
             [
                 {
                     number,
+                    status: 'POSTED',
                     customerId: customer ? customer._id : null,
                     customerNameSnapshot: customer ? customer.name : '',
                     outgoing: {
                         productId: outProduct._id,
                         skuSnapshot: outProduct.sku,
                         nameSnapshot: outProduct.name,
+                        stockBucket: outBucket,
                         quantity: cleanOutQty,
                         unitCost: outUnitCost,
                         currency: outProduct.currency,
@@ -139,6 +160,7 @@ async function createProductExchange({
                         productId: inProduct._id,
                         skuSnapshot: inProduct.sku,
                         nameSnapshot: inProduct.name,
+                        stockBucket: inBucket,
                         quantity: cleanInQty,
                         unitCost: inUnitCost,
                         currency: inProduct.currency,
@@ -163,6 +185,7 @@ async function createProductExchange({
                 before: null,
                 after: {
                     number: exchangeDoc.number,
+                    status: exchangeDoc.status,
                     outgoing: exchangeDoc.outgoing,
                     incoming: exchangeDoc.incoming,
                     exchangeRate: exchangeDoc.exchangeRate,
@@ -182,6 +205,99 @@ async function createProductExchange({
     });
 }
 
+/**
+ * Reverses a posted Product Exchange (`EX-...`) by returning outgoing stock
+ * and deducting incoming stock inside a transaction with audit logging.
+ */
+async function cancelProductExchange({
+    exchangeId,
+    reason = '',
+    performedBy = null,
+    date = new Date(),
+}) {
+    if (!exchangeId) {
+        const err = new Error('exchangeId is required.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    return runInTransaction(async (session) => {
+        const exchangeDoc = await ProductExchange.findById(exchangeId).session(session);
+        if (!exchangeDoc) {
+            const err = new Error('Product exchange not found.');
+            err.statusCode = 404;
+            throw err;
+        }
+        if (exchangeDoc.status === 'CANCELLED') {
+            const err = new Error(`Product exchange ${exchangeDoc.number} is already cancelled.`);
+            err.statusCode = 400;
+            throw err;
+        }
+
+        const cancelReason = reason || `Cancelled product exchange ${exchangeDoc.number}`;
+        const outBucket = normalizeBucket(exchangeDoc.outgoing.stockBucket, 'AVAILABLE');
+        const inBucket = normalizeBucket(exchangeDoc.incoming.stockBucket, 'AVAILABLE');
+
+        const inReversal = await deductStock(
+            {
+                productId: exchangeDoc.incoming.productId,
+                quantity: exchangeDoc.incoming.quantity,
+                unitCost: exchangeDoc.incoming.unitCost,
+                currency: exchangeDoc.incoming.currency,
+                stockBucket: inBucket,
+                referenceType: 'ADJUSTMENT',
+                referenceNumber: exchangeDoc.number,
+                reason: cancelReason,
+                performedBy,
+                date,
+            },
+            session
+        );
+
+        const outReversal = await receiveStock(
+            {
+                productId: exchangeDoc.outgoing.productId,
+                quantity: exchangeDoc.outgoing.quantity,
+                unitCost: exchangeDoc.outgoing.unitCost,
+                currency: exchangeDoc.outgoing.currency,
+                stockBucket: outBucket,
+                referenceType: 'ADJUSTMENT',
+                referenceNumber: exchangeDoc.number,
+                reason: cancelReason,
+                performedBy,
+                date,
+            },
+            session
+        );
+
+        const beforeSnapshot = { status: exchangeDoc.status };
+        exchangeDoc.status = 'CANCELLED';
+        await exchangeDoc.save({ session });
+
+        await logAudit(
+            {
+                entityType: 'ProductExchange',
+                entityId: exchangeDoc._id,
+                entityNumber: exchangeDoc.number,
+                action: 'CANCEL',
+                reason: cancelReason,
+                before: beforeSnapshot,
+                after: { status: exchangeDoc.status },
+                performedBy,
+                timestamp: date,
+            },
+            session
+        );
+
+        return {
+            exchange: exchangeDoc,
+            outgoingProduct: outReversal.product,
+            incomingProduct: inReversal.product,
+        };
+    });
+}
+
 module.exports = {
     createProductExchange,
+    cancelProductExchange,
 };

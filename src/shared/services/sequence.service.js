@@ -1,6 +1,12 @@
 const Counter = require('../models/counter');
 
 async function getNextSequence(key, prefix, session = null) {
+    if (!key) {
+        const err = new Error('Sequence key is required.');
+        err.statusCode = 400;
+        throw err;
+    }
+
     const options = {
         returnDocument: 'after',
         upsert: true,

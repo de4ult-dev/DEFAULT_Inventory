@@ -10,6 +10,7 @@ const purchaseItemSchema = new mongoose.Schema(
         skuSnapshot: { type: String, trim: true, default: '' },
         nameSnapshot: { type: String, trim: true, default: '' },
         quantity: { type: Number, required: true, min: 0 },
+        receivedQuantity: { type: Number, default: 0, min: 0 },
         unitCost: { type: Number, required: true, min: 0 },
         currency: { type: String, enum: ['USD', 'Kz'], required: true },
         lineTotal: { type: Number, required: true, min: 0 },
@@ -56,7 +57,7 @@ const purchaseOrderSchema = new mongoose.Schema(
         },
         status: {
             type: String,
-            enum: ['DRAFT', 'AWAITING_RECEIPT', 'RECEIVED'],
+            enum: ['DRAFT', 'AWAITING_RECEIPT', 'PARTIAL', 'RECEIVED', 'CANCELLED'],
             required: true,
         },
         items: {
@@ -105,5 +106,6 @@ const purchaseOrderSchema = new mongoose.Schema(
 
 purchaseOrderSchema.index({ type: 1, status: 1, date: -1 });
 purchaseOrderSchema.index({ supplierId: 1, date: -1 });
+purchaseOrderSchema.index({ parentOrderId: 1 });
 
 module.exports = mongoose.model('PurchaseOrder', purchaseOrderSchema);

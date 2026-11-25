@@ -1,5 +1,5 @@
 const Collection = require('./collection');
-const Customer = require('../customers');
+const Customer = require('../customers/customer');
 const Cashbox = require('../treasury/cashbox');
 const Invoice = require('../invoices/invoice');
 const Payment = require('../invoices/payment');
@@ -120,11 +120,21 @@ async function createCollection({
             err.statusCode = 404;
             throw err;
         }
+        if (customer.isActive === false) {
+            const err = new Error(`Customer "${customer.name}" is inactive.`);
+            err.statusCode = 400;
+            throw err;
+        }
 
         const cashbox = await Cashbox.findById(cashboxId).session(session);
         if (!cashbox) {
             const err = new Error('Cashbox not found.');
             err.statusCode = 404;
+            throw err;
+        }
+        if (cashbox.isActive === false) {
+            const err = new Error(`Cashbox "${cashbox.name}" is inactive.`);
+            err.statusCode = 400;
             throw err;
         }
 
@@ -154,7 +164,6 @@ async function createCollection({
         const originalRounded = amtDec.toDecimalPlaces(2).toNumber();
         const receiptNumber = await getNextSequence('COLLECTION', 'RCT', session);
 
-        // 1. Deposit into cashbox in its own currency
         await recordCashMovement(
             {
                 cashboxId: cashbox._id,
@@ -181,7 +190,6 @@ async function createCollection({
         const currentDebt = toDecimal(customer.balances[debtKey]);
         const settledDec = toDecimal(settledAmount);
 
-        // 2. Reduce customer debt in debtCurrency; if payment exceeds debt, credit excess to creditBalances
         if (settledDec.gt(currentDebt)) {
             const excess = settledDec.minus(currentDebt).toDecimalPlaces(2).toNumber();
             customer.balances[debtKey] = 0;
@@ -192,7 +200,6 @@ async function createCollection({
 
         await customer.save({ session });
 
-        // 3. Optional invoice allocations when applyMode === 'SPECIFIC_INVOICES'
         const finalAllocations = [];
         if (applyMode === 'SPECIFIC_INVOICES' && Array.isArray(allocations) && allocations.length > 0) {
             let allocatedSum = toDecimal(0);
@@ -327,7 +334,110 @@ async function createCollection({
     });
 }
 
+/**
+ * Reverses a collection (`RCT-...`) by withdrawing `cashboxAmount` from the cashbox (`OUT`)
+ * and restoring customer balances/creditBalances inside a transaction with audit logging.
+ */
+async function cancelCollection({
+    collectionId,
+    reason = '',
+    performedBy = null,
+    date = new Date(),
+}) {
+    if (!collectionId) {
+        const err = new Error('collectionId is required.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    return runInTransaction(async (session) => {
+        const collectionDoc = await Collection.findById(collectionId).session(session);
+        if (!collectionDoc) {
+            const err = new Error('Collection not found.');
+            err.statusCode = 404;
+            throw err;
+        }
+        if (collectionDoc.status === 'CANCELLED') {
+            const err = new Error(`Collection ${collectionDoc.number} is already cancelled.`);
+            err.statusCode = 400;
+            throw err;
+        }
+
+        const customer = await Customer.findById(collectionDoc.customerId).session(session);
+        if (!customer) {
+            const err = new Error('Customer not found for collection.');
+            err.statusCode = 404;
+            throw err;
+        }
+
+        const cancelReason = reason || `Cancelled collection ${collectionDoc.number}`;
+
+        await recordCashMovement(
+            {
+                cashboxId: collectionDoc.cashboxId,
+                direction: 'OUT',
+                amount: collectionDoc.cashboxAmount,
+                currency: collectionDoc.cashboxCurrency,
+                category: 'COLLECTION_REVERSAL',
+                referenceType: 'CUSTOMER',
+                referenceId: collectionDoc._id,
+                referenceNumber: collectionDoc.number,
+                description: cancelReason,
+                reason: cancelReason,
+                performedBy,
+                date,
+            },
+            session
+        );
+
+        const beforeCustomer = {
+            balances: { ...customer.balances },
+            creditBalances: { ...customer.creditBalances },
+        };
+
+        const debtKey = collectionDoc.debtCurrency === 'USD' ? 'usd' : 'kz';
+        const settledDec = toDecimal(collectionDoc.settledAmount);
+        const currentCreditDec = toDecimal(customer.creditBalances[debtKey] || 0);
+
+        if (currentCreditDec.gte(settledDec)) {
+            customer.creditBalances[debtKey] = subMoney(currentCreditDec, settledDec, 2);
+        } else {
+            const fromCredit = currentCreditDec;
+            const remainingToDebt = settledDec.minus(fromCredit);
+            customer.creditBalances[debtKey] = 0;
+            customer.balances[debtKey] = addMoney(customer.balances[debtKey], remainingToDebt, 2);
+        }
+
+        await customer.save({ session });
+
+        collectionDoc.status = 'CANCELLED';
+        await collectionDoc.save({ session });
+
+        await logAudit(
+            {
+                entityType: 'Collection',
+                entityId: collectionDoc._id,
+                entityNumber: collectionDoc.number,
+                action: 'CANCEL',
+                reason: cancelReason,
+                before: beforeCustomer,
+                after: {
+                    status: collectionDoc.status,
+                    customerBalances: customer.balances,
+                    customerCreditBalances: customer.creditBalances,
+                },
+                performedBy,
+                timestamp: date,
+            },
+            session
+        );
+
+        return { collection: collectionDoc, customer };
+    });
+}
+
 module.exports = {
     createCollection,
+    cancelCollection,
     convertWithManualRate,
 };

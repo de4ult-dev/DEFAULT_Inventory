@@ -47,6 +47,15 @@ const invoiceSchema = new mongoose.Schema(
       enum: ['PAID', 'UNPAID', 'PARTIAL', 'CANCELLED'],
       default: 'UNPAID',
     },
+    cancelReason: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
     notes: {
       type: String,
       trim: true,
@@ -63,5 +72,6 @@ const invoiceSchema = new mongoose.Schema(
 
 invoiceSchema.index({ customerId: 1, date: -1 });
 invoiceSchema.index({ status: 1, date: -1 });
+invoiceSchema.index({ date: -1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

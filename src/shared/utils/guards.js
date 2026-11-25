@@ -2,22 +2,42 @@ const { toDecimal } = require('./money');
 
 const ALLOWED_CURRENCIES = ['USD', 'Kz'];
 
+function normalizeCurrency(currency) {
+  if (currency === null || currency === undefined) return currency;
+  const trimmed = String(currency).trim();
+  if (trimmed.toUpperCase() === 'USD') return 'USD';
+  if (trimmed.toUpperCase() === 'KZ') return 'Kz';
+  return trimmed;
+}
+
 function assertValidCurrency(currency, fieldName = 'currency') {
-  if (!ALLOWED_CURRENCIES.includes(currency)) {
-    const err = new Error(`Invalid ${fieldName}: ${currency}. Allowed currencies are USD and Kz.`);
+  const normalized = normalizeCurrency(currency);
+  if (!ALLOWED_CURRENCIES.includes(normalized)) {
+    const err = new Error(
+      `Invalid ${fieldName}: ${currency}. Allowed currencies are USD and Kz.`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return normalized;
+}
+
+function assertSameCurrency(leftCurrency, rightCurrency, context = 'operation') {
+  const left = assertValidCurrency(leftCurrency, 'source currency');
+  const right = assertValidCurrency(rightCurrency, 'target currency');
+
+  if (left !== right) {
+    const err = new Error(
+      `Currency mismatch in ${context}: cannot mix ${left} and ${right} without explicit handling.`
+    );
     err.statusCode = 400;
     throw err;
   }
 }
 
-function assertSameCurrency(leftCurrency, rightCurrency, context = 'operation') {
-  assertValidCurrency(leftCurrency, 'source currency');
-  assertValidCurrency(rightCurrency, 'target currency');
-
-  if (leftCurrency !== rightCurrency) {
-    const err = new Error(
-      `Currency mismatch in ${context}: cannot mix ${leftCurrency} and ${rightCurrency} without explicit handling.`
-    );
+function assertPositive(value, label = 'Amount') {
+  if (!toDecimal(value).gt(0)) {
+    const err = new Error(`${label} must be greater than zero.`);
     err.statusCode = 400;
     throw err;
   }
@@ -72,8 +92,10 @@ function assertSufficientCash(currentBalance, requestedAmount, cashboxName = 'Ca
 
 module.exports = {
   ALLOWED_CURRENCIES,
+  normalizeCurrency,
   assertValidCurrency,
   assertSameCurrency,
+  assertPositive,
   assertNonNegative,
   assertSufficientStock,
   assertSufficientCash,

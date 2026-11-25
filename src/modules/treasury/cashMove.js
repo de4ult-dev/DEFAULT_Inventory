@@ -41,6 +41,9 @@ const cashMoveSchema = new mongoose.Schema(
         'CONTAINER_COST',
         'RETURN_REFUND',
         'EXPENSE',
+        'EXPENSE_REVERSAL',
+        'COLLECTION_REVERSAL',
+        'REVERSAL',
         'CASHBOX_TRANSFER',
         'OPENING_BALANCE',
       ],
@@ -57,6 +60,7 @@ const cashMoveSchema = new mongoose.Schema(
         'EXPENSE',
         'TRANSFER',
         'OPENING',
+        'CASH_MOVE',
       ],
       required: true,
     },
@@ -89,5 +93,6 @@ const cashMoveSchema = new mongoose.Schema(
 
 cashMoveSchema.index({ cashboxId: 1, date: -1 });
 cashMoveSchema.index({ referenceType: 1, referenceId: 1 });
+cashMoveSchema.index({ referenceNumber: 1, date: -1 });
 
 module.exports = mongoose.model('CashMove', cashMoveSchema);

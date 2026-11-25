@@ -33,6 +33,11 @@ const invoiceItemSchema = new mongoose.Schema(
             required: [true, 'Unit price is required'],
             min: [0, 'Unit price cannot be negative'],
         },
+        priceSource: {
+            type: String,
+            enum: ['PRICE_LIST', 'MANUAL_OVERRIDE'],
+            default: 'PRICE_LIST',
+        },
         currency: {
             type: String,
             enum: ['USD', 'Kz'],

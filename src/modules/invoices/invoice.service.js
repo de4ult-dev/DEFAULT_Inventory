@@ -1,7 +1,7 @@
 const Invoice = require('./invoice');
 const InvoiceItem = require('./invoiceItems');
 const Payment = require('./payment');
-const Customer = require('../customers');
+const Customer = require('../customers/customer');
 const Product = require('../inventory/product');
 const Cashbox = require('../treasury/cashbox');
 const { deductStock } = require('../inventory/inventory.service');
@@ -18,6 +18,17 @@ function normalizeCurrency(curr) {
     if (trimmed.toUpperCase() === 'USD') return 'USD';
     if (trimmed.toUpperCase() === 'KZ') return 'Kz';
     return trimmed;
+}
+
+function hasCustomPricePermission({ allowCustomPrice = false, permissions = [], userRole = null }) {
+    if (allowCustomPrice === true) return true;
+    if (Array.isArray(permissions) && (permissions.includes('OVERRIDE_PRICE') || permissions.includes('SET_UNIT_PRICE'))) {
+        return true;
+    }
+    if (userRole && ['ADMIN', 'MANAGER'].includes(String(userRole).toUpperCase())) {
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -62,8 +73,13 @@ function convertWithManualRate(amount, fromCurrency, toCurrency, manualRate, dec
     };
 }
 
-function resolveUnitPrice(product, priceList = 'CASH', explicitPrice = null) {
+function resolveUnitPrice(product, priceList = 'CASH', explicitPrice = null, canOverridePrice = false) {
     if (explicitPrice !== null && explicitPrice !== undefined) {
+        if (!canOverridePrice) {
+            const err = new Error(`Custom unitPrice is not permitted for product ${product.sku}. Price must come from price list "${priceList}".`);
+            err.statusCode = 403;
+            throw err;
+        }
         const dec = toDecimal(explicitPrice);
         if (dec.lt(0)) {
             const err = new Error(`Unit price cannot be negative for product ${product.sku}.`);
@@ -236,6 +252,7 @@ async function applyPaymentToInvoice({
 
 async function createInvoice({
     customerId = null,
+    isWalkIn = false,
     type = 'CASH',
     priceList = null,
     items = [],
@@ -243,6 +260,9 @@ async function createInvoice({
     notes = '',
     performedBy = null,
     date = new Date(),
+    allowCustomPrice = false,
+    permissions = [],
+    userRole = null,
 }) {
     if (!Array.isArray(items) || items.length === 0) {
         const err = new Error('Invoice must contain at least one item.');
@@ -250,8 +270,14 @@ async function createInvoice({
         throw err;
     }
 
-    const effectivePriceList =
-        priceList || (type === 'WHOLESALE' ? 'WHOLESALE' : type === 'CREDIT' ? 'CREDIT' : 'CASH');
+    const isAnonymousWalkIn = !customerId;
+    if (isAnonymousWalkIn && String(type).toUpperCase() === 'CREDIT') {
+        const err = new Error('CREDIT invoices are not allowed for walk-in (unregistered) customers.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const canOverridePrice = hasCustomPricePermission({ allowCustomPrice, permissions, userRole });
 
     return runInTransaction(async (session) => {
         let customer = null;
@@ -268,6 +294,11 @@ async function createInvoice({
                 throw err;
             }
         }
+
+        const effectivePriceList =
+            priceList ||
+            (customer?.type) ||
+            (type === 'WHOLESALE' ? 'WHOLESALE' : type === 'CREDIT' ? 'CREDIT' : 'CASH');
 
         const invoiceNumber = await getNextSequence('INVOICE', 'INV', session);
 
@@ -300,7 +331,7 @@ async function createInvoice({
                 );
             }
 
-            const unitPrice = resolveUnitPrice(product, effectivePriceList, rawItem.unitPrice);
+            const unitPrice = resolveUnitPrice(product, effectivePriceList, rawItem.unitPrice, canOverridePrice);
             const cleanQty = qtyDec.toDecimalPlaces(6).toNumber();
             const lineTotal = mulMoney(cleanQty, unitPrice, 2);
 
@@ -351,6 +382,8 @@ async function createInvoice({
                     ? type
                     : 'CASH';
 
+        const trackCustomerDebt = Boolean(customer) && !isWalkIn;
+
         const invoice = new Invoice({
             number: invoiceNumber,
             customerId: customer ? customer._id : null,
@@ -375,7 +408,7 @@ async function createInvoice({
             { session, ordered: true }
         );
 
-        if (customer) {
+        if (trackCustomerDebt) {
             customer.balances.usd = addMoney(customer.balances.usd, finalTotals.usd, 2);
             customer.balances.kz = addMoney(customer.balances.kz, finalTotals.kz, 2);
 
@@ -403,7 +436,7 @@ async function createInvoice({
         for (const pmt of payments) {
             const createdPmt = await applyPaymentToInvoice({
                 invoice,
-                customer,
+                customer: trackCustomerDebt ? customer : null,
                 paymentInput: pmt,
                 performedBy,
                 date,
@@ -413,9 +446,22 @@ async function createInvoice({
         }
 
         invoice.status = computeInvoiceStatus(invoice.totals, invoice.remainingAmount, false);
+
+        if (isAnonymousWalkIn || isWalkIn) {
+            const remUsd = toDecimal(invoice.remainingAmount.usd);
+            const remKz = toDecimal(invoice.remainingAmount.kz);
+            if (!remUsd.isZero() || !remKz.isZero() || invoice.status !== 'PAID') {
+                const err = new Error(
+                    'Walk-in sales must be paid in full into a receiving cashbox at the time of sale.'
+                );
+                err.statusCode = 400;
+                throw err;
+            }
+        }
+
         await invoice.save({ session });
 
-        if (customer) {
+        if (trackCustomerDebt && customer) {
             await customer.save({ session });
         }
 
