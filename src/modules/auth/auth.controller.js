@@ -219,8 +219,7 @@ function hashResetToken(token) {
                 const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
                 const resetLink = `${baseUrl}/reset-password?token=${rawToken}`;
 
-                // مؤقتًا بنطبع اللينك في الـ console
-               console.log(`[DEV] Password reset link for ${user.email}: ${resetLink}`);
+               
                   try {
                           await sendResetEmail(user.email, resetLink);
                      } catch (mailErr) {
